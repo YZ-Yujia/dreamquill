@@ -1,0 +1,40 @@
+{
+  "name": "dreamquill",
+  "version": "0.1.10",
+  "description": "Dreamquill AI 写作——书稿、设定、记忆与上下文组装工具，在 zcode 中辅助小说创作。",
+  "author": {
+    "name": "乐正羽佳"
+  },
+  "license": "Apache-2.0",
+  "skills": "skills",
+  "commands": "commands",
+  "mcpServers": {
+    "dreamquill": {
+      "command": "node",
+      "args": ["${ZCODE_PLUGIN_ROOT}/dist/mcp/server.js"],
+      "cwd": "${ZCODE_PROJECT_DIR}",
+      "env": {
+        "DREAMQUILL_CONTEXT_CAPACITY": "${user_config.context_capacity}",
+        "DREAMQUILL_BUDGET_PERCENT": "${user_config.budget_percent}",
+        "DREAMQUILL_WORLD_REF_DEPTH": "${user_config.world_ref_depth}"
+      }
+    }
+  },
+  "userConfig": {
+    "context_capacity": {
+      "type": "number",
+      "default": 1000000,
+      "description": "上下文总预算容量（token）：组装注入的全部内容（记忆/设定/大纲/前文等）总体上限＝容量×阈值。按宿主模型的上下文窗口设置（留出对话历史与工具定义的余量）。"
+    },
+    "budget_percent": {
+      "type": "number",
+      "default": 60,
+      "description": "总预算阈值（%）：容量×阈值＝组装内容允许占用的 token 上限。"
+    },
+    "world_ref_depth": {
+      "type": "number",
+      "default": 10,
+      "description": "世界条目 [[引用]] 递归展开层数上限（基础引用集之外再追几层；成环自动跳过）。"
+    }
+  }
+}

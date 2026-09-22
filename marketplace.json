@@ -1,0 +1,26 @@
+{
+  "name": "dreamquill-local",
+  "plugins": [
+    {
+      "name": "dreamquill",
+      "source": "plugin",
+      "description": "Dreamquill AI 写作——书稿、设定、记忆与上下文组装工具，在 zcode 中辅助小说创作。",
+      "description_i18n": {
+        "en": "Dreamquill AI writing: manuscript, worldbuilding, memory, context assembly and draft tools with a five-stage creation workflow.",
+        "zh-CN": "Dreamquill AI 写作——书稿、设定、记忆与上下文组装工具，在 zcode 中辅助小说创作。"
+      },
+      "version": "0.1.10",
+      "author": {
+        "name": "乐正羽佳"
+      },
+      "category": "writing",
+      "keywords": [
+        "writing",
+        "novel",
+        "mcp",
+        "memory",
+        "outline"
+      ]
+    }
+  ]
+}

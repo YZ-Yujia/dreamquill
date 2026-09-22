@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "dreamquill": {
+      "command": "node",
+      "args": [
+        "${ZCODE_PLUGIN_ROOT}/dist/mcp/server.js"
+      ],
+      "cwd": "${ZCODE_PROJECT_DIR}",
+      "env": {
+        "DREAMQUILL_CONTEXT_CAPACITY": "${user_config.context_capacity}",
+        "DREAMQUILL_BUDGET_PERCENT": "${user_config.budget_percent}",
+        "DREAMQUILL_WORLD_REF_DEPTH": "${user_config.world_ref_depth}"
+      }
+    }
+  }
+}

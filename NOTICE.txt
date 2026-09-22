@@ -1,0 +1,5 @@
+Dreamquill — zcode 的 AI 辅助长篇小说创作插件
+Copyright 2026 乐正羽佳 (Dreamquill)
+
+本产品依据 Apache License 2.0 授权（见仓库根 LICENSE 文件）。
+"Dreamquill" 名称与相关标识不属于该协议授权范围。

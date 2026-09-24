@@ -11,13 +11,11 @@
 
 ## 安装
 
-本仓库即 zcode 插件市场（marketplace）。
+本仓库即 zcode 插件市场（marketplace），构建产物 `plugin/dist/mcp/server.js` 已入库，克隆即可安装，无需本地构建。
 
-在 zcode 中执行：
-- 添加插件市场
-- 填入git url
+仓库地址：`https://github.com/YZ-Yujia/dreamquill.git`（市场名 `dreamquill-local`，插件名 `dreamquill`）
 
-安装后重启会话即可使用；
+在 zcode 中添加该 git 仓库作为插件市场，安装 `dreamquill@dreamquill-local`，然后重启会话即可使用。未初始化时插件引导 `initBook` 在项目根上初始化（项目根即书目录）。可用 `getCurrentBook` 验证连通——server 启动自动打开已初始化的书。
 
 前置：zcode 宿主自带 Node 运行时（插件 MCP server 以 `node` 启动，Node ≥ 22）。
 

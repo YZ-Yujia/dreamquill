@@ -47,7 +47,7 @@ description: 'Dreamquill 小说创作流程——五阶段创作会话（创意�
 - 组装（分层，防上下文膨胀）：会话开始 `getStaticContext` 一次；**每次写作前** `getChapterContext({chapterId, scanText})`——轻量动态层（细纲＋触发记忆）。scanText＝近期对话要点。**连续续写**（本章是本会话刚写）不带 tailChars——对话历史即前文；**跳章续写**（本章非本会话所写）带 `tailChars: 800`，中段细节需要时直接原生 Read 取真值（路径经 `readManuscript` `metaOnly` 定位）。
 - 工作：按章纲逐章写作——正文路径来自 `createChapter` 返回或 `readManuscript` metaOnly；**正文文件未建时直接原生 Write 该路径**（落盘即自动配对成章）。字数与风格遵守 `getStyleRules`；写后可经 `readManuscript`（`metaOnly`）回查字数。章节序号全书连续（跨卷不重置），由工具自动维护。先写正文后补细纲的章，建议 `createChapter` 传 order 补建（自动填模板骨架，不覆盖既有），或原生 Write 细纲路径（无模板）。
 - **写后三级审阅（自动触发）**：每次整章 Write 后进入审阅回路——
-  1. spawn **dreamquill-reviewer** 子代理（参数：章 id 或章序＋轮次 all），取回三轮结构化报告（细纲符合性→逐句节奏→逐字用词含句式，三轮以风格规范为基准）；
+  1. **并行 spawn 三个审阅子代理**（一条消息内三次调用，各传章 id 或章序，均以风格规范为基准）：**dreamquill-reviewer-outline**（轮一细纲符合性）、**dreamquill-reviewer-rhythm**（轮二逐句节奏）、**dreamquill-reviewer-wording**（轮三逐字用词与句式），取回三份结构化报告；
   2. 报告有违例 → 按报告**一次改写**，只改报告点名的位置，不动其余；
   3. **改写后不触发复审**（硬约定——信任单次改写，余留问题交作者把关）；
   4. 交付时向作者附报告摘要并明示：「已按审阅报告改写，请过目」；报告标注「待作者裁决」的项原样呈报，不擅自改。

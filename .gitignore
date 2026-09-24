@@ -7,5 +7,4 @@ dist-market/
 Thumbs.db
 *.zip
 .zcode/
-
-# 注意：plugins/dreamquill/dist/ 是安装面的组成部分，**提交入库**（git 市场分发依赖）。
+plugin/README.md

@@ -1,11 +1,11 @@
 {
   "name": "dreamquill",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Dreamquill AI 写作——书稿、设定、记忆与上下文组装工具，在 zcode 中辅助小说创作。",
   "author": {
     "name": "乐正羽佳"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "skills": "skills",
   "commands": "commands",
   "mcpServers": {

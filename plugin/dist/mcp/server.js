@@ -41264,8 +41264,21 @@ import { dirname } from "node:path";
 // ../../packages/core/src/fs-watch/journal.ts
 var TTL_MS = 1e4;
 var journal = /* @__PURE__ */ new Map();
+var removed = /* @__PURE__ */ new Map();
 function markWritten(path, mtimeMs, size) {
   journal.set(path, { mtimeMs, size, at: Date.now() });
+}
+function markRemoved(path) {
+  removed.set(path, Date.now());
+}
+function isSelfRemoved(path) {
+  const at = removed.get(path);
+  if (at === void 0) return false;
+  if (Date.now() - at > TTL_MS) {
+    removed.delete(path);
+    return false;
+  }
+  return true;
 }
 function isSelfWrite(path, mtimeMs, size) {
   prune();
@@ -41277,6 +41290,9 @@ function prune() {
   const now = Date.now();
   for (const [path, rec] of journal) {
     if (now - rec.at > TTL_MS) journal.delete(path);
+  }
+  for (const [path, at] of removed) {
+    if (now - at > TTL_MS) removed.delete(path);
   }
 }
 
@@ -41323,6 +41339,12 @@ async function writeOnce(path, content, options) {
     await rm(tmp, { force: true }).catch(() => void 0);
     throw new AppError(message, code, { cause: String(err) });
   }
+}
+async function renameJournaled(oldPath, newPath) {
+  await rename(oldPath, newPath);
+  const s = await stat(newPath).catch(() => null);
+  if (s) markWritten(newPath, s.mtimeMs, s.size);
+  markRemoved(oldPath);
 }
 
 // ../../packages/core/src/rpc.ts
@@ -42271,29 +42293,29 @@ function createBookIndex(bookDir, initial) {
     },
     pruneChapters(existingPaths) {
       const d = ensure();
-      const removed = [];
+      const removed2 = [];
       for (const [id, entry] of Object.entries(d.chapters)) {
         if (!existingPaths.has(entry.path)) {
           tombstones.set(`chapter:${entry.path}`, { id, record: entry, deletedAt: Date.now() });
           delete d.chapters[id];
-          removed.push(id);
+          removed2.push(id);
           dirty = true;
         }
       }
-      return removed;
+      return removed2;
     },
     pruneVolumes(existingFolders) {
       const d = ensure();
-      const removed = [];
+      const removed2 = [];
       for (const [id, entry] of Object.entries(d.volumes)) {
         if (!existingFolders.has(entry.folder)) {
           tombstones.set(`volume:${entry.folder}`, { id, record: entry, deletedAt: Date.now() });
           delete d.volumes[id];
-          removed.push(id);
+          removed2.push(id);
           dirty = true;
         }
       }
-      return removed;
+      return removed2;
     },
     resolveEntry(path) {
       const d = ensure();
@@ -42330,17 +42352,17 @@ function createBookIndex(bookDir, initial) {
     },
     pruneEntries(existingPaths, prefix) {
       const d = ensure();
-      const removed = [];
+      const removed2 = [];
       for (const [id, entry] of Object.entries(d.entries)) {
         if (prefix && !entry.path.startsWith(prefix)) continue;
         if (!existingPaths.has(entry.path)) {
           tombstones.set(`entry:${entry.path}`, { id, record: entry, deletedAt: Date.now() });
           delete d.entries[id];
-          removed.push(id);
+          removed2.push(id);
           dirty = true;
         }
       }
-      return removed;
+      return removed2;
     },
     async save() {
       if (!dirty) return;
@@ -42407,6 +42429,26 @@ function createIndexRegistry() {
       byDir.delete(bookDir);
     }
   };
+}
+
+// ../../packages/core/src/book/op-queue.ts
+function createOpQueue() {
+  let tail = Promise.resolve();
+  function run(op) {
+    const next = tail.then(op, op);
+    tail = next.catch(() => void 0);
+    return next;
+  }
+  return { run };
+}
+function queued(impl, queue) {
+  return new Proxy(impl, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      return (...args) => queue.run(() => value.apply(target, args));
+    }
+  });
 }
 
 // ../../packages/core/src/book/layout.ts
@@ -42675,7 +42717,7 @@ function assertVolumeName(name) {
 
 // ../../packages/core/src/book/manager.ts
 var STAGE_FILE = "\u521B\u4F5C\u6D41\u7A0B.json";
-function createBookManager(indexRegistry = createIndexRegistry()) {
+function createBookManager(indexRegistry = createIndexRegistry(), queue = createOpQueue()) {
   let current = null;
   function requireCurrent() {
     if (!current) {
@@ -42771,7 +42813,7 @@ function createBookManager(indexRegistry = createIndexRegistry()) {
       return false;
     }
   }
-  return {
+  const impl = {
     create,
     open: open3,
     close,
@@ -42801,10 +42843,17 @@ function createBookManager(indexRegistry = createIndexRegistry()) {
     getStage,
     setStage
   };
+  return {
+    ...impl,
+    createVolume: (name) => queue.run(() => impl.createVolume(name)),
+    renameVolume: (id, newName) => queue.run(() => impl.renameVolume(id, newName)),
+    deleteVolume: (id, force) => queue.run(() => impl.deleteVolume(id, force)),
+    reorderVolumes: (orderedIds) => queue.run(() => impl.reorderVolumes(orderedIds))
+  };
 }
 
 // ../../packages/core/src/chapter/manager.ts
-import { mkdir as mkdir4, readdir as readdir3, rename as rename3, rm as rm3 } from "node:fs/promises";
+import { mkdir as mkdir4, readdir as readdir3, rm as rm3 } from "node:fs/promises";
 import { join as join8 } from "node:path";
 
 // ../../packages/core/src/chapter/layout.ts
@@ -42960,7 +43009,7 @@ async function cachedMeta(cache, key, path, parse6) {
 }
 
 // ../../packages/core/src/chapter/manager.ts
-function createChapterManager(getBookDir, indexRegistry = createIndexRegistry()) {
+function createChapterManager(getBookDir, indexRegistry = createIndexRegistry(), queue = createOpQueue()) {
   const chapterCache = createCacheRegistry("chapters");
   async function scan() {
     const bookDir = getBookDir();
@@ -43064,7 +43113,7 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
     await mkdir4(chapterOutlineDir(bookDir, toFolder), { recursive: true }).catch(() => void 0);
     if (chapter.hasBody) {
       try {
-        await rename3(
+        await renameJournaled(
           join8(bodyVolumeDir(bookDir, chapter.volumeFolder), chapter.bodyFile),
           join8(bodyVolumeDir(bookDir, toFolder), newBody)
         );
@@ -43073,7 +43122,7 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
       }
     }
     if (chapter.hasOutline) {
-      await rename3(
+      await renameJournaled(
         join8(chapterOutlineDir(bookDir, chapter.volumeFolder), chapter.outlineFile),
         join8(chapterOutlineDir(bookDir, toFolder), newOutline)
       ).catch(() => void 0);
@@ -43099,10 +43148,10 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
       const bodyDir = bodyVolumeDir(bookDir, c.volumeFolder);
       const outlineDir = chapterOutlineDir(bookDir, c.volumeFolder);
       if (c.hasBody) {
-        await rename3(join8(bodyDir, c.bodyFile), join8(bodyDir, `${tmp}.md`));
+        await renameJournaled(join8(bodyDir, c.bodyFile), join8(bodyDir, `${tmp}.md`));
       }
       if (c.hasOutline) {
-        await rename3(join8(outlineDir, c.outlineFile), join8(outlineDir, `${tmp}.\u7EB2.md`)).catch(
+        await renameJournaled(join8(outlineDir, c.outlineFile), join8(outlineDir, `${tmp}.\u7EB2.md`)).catch(
           () => void 0
         );
       }
@@ -43113,10 +43162,10 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
       const outlineDir = chapterOutlineDir(bookDir, c.volumeFolder);
       const body = chapterFile(to, c.title);
       if (c.hasBody) {
-        await rename3(join8(bodyDir, `${tmp}.md`), join8(bodyDir, body));
+        await renameJournaled(join8(bodyDir, `${tmp}.md`), join8(bodyDir, body));
       }
       if (c.hasOutline) {
-        await rename3(
+        await renameJournaled(
           join8(outlineDir, `${tmp}.\u7EB2.md`),
           join8(outlineDir, outlineFile(to, c.title))
         ).catch(() => void 0);
@@ -43125,7 +43174,7 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
     }
     await index.save();
   }
-  return {
+  const impl = {
     list: async (volumeId) => (await scan()).filter((c) => volumeId === null || c.volumeId === volumeId).sort((a, b) => a.order - b.order || a.path.localeCompare(b.path)).map(toInfo),
     create: async (volumeId, title, files = "outline", order) => {
       const bookDir = getBookDir();
@@ -43231,10 +43280,10 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
       for (let i = 0; i < ordered.length; i++) {
         const c = ordered[i];
         if (c.hasBody) {
-          await rename3(join8(bodyDir, c.bodyFile), join8(bodyDir, `__ch-${i}.md`));
+          await renameJournaled(join8(bodyDir, c.bodyFile), join8(bodyDir, `__ch-${i}.md`));
         }
         if (c.hasOutline) {
-          await rename3(join8(outlineDir, c.outlineFile), join8(outlineDir, `__ch-${i}.\u7EB2.md`)).catch(
+          await renameJournaled(join8(outlineDir, c.outlineFile), join8(outlineDir, `__ch-${i}.\u7EB2.md`)).catch(
             () => void 0
           );
         }
@@ -43244,10 +43293,10 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
         const body = chapterFile(orders[i], c.title);
         const outline = outlineFile(orders[i], c.title);
         if (c.hasBody) {
-          await rename3(join8(bodyDir, `__ch-${i}.md`), join8(bodyDir, body));
+          await renameJournaled(join8(bodyDir, `__ch-${i}.md`), join8(bodyDir, body));
         }
         if (c.hasOutline) {
-          await rename3(join8(outlineDir, `__ch-${i}.\u7EB2.md`), join8(outlineDir, outline)).catch(
+          await renameJournaled(join8(outlineDir, `__ch-${i}.\u7EB2.md`), join8(outlineDir, outline)).catch(
             () => void 0
           );
         }
@@ -43345,6 +43394,7 @@ function createChapterManager(getBookDir, indexRegistry = createIndexRegistry())
       };
     }
   };
+  return queued(impl, queue);
 }
 function toInfo(c) {
   return {
@@ -43363,7 +43413,7 @@ function toInfo(c) {
 
 // ../../packages/core/src/character/manager.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { readFile as readFile7, readdir as readdir4, rename as rename4, rm as rm4 } from "node:fs/promises";
+import { readFile as readFile7, readdir as readdir4, rename as rename3, rm as rm4 } from "node:fs/promises";
 import { join as join9 } from "node:path";
 
 // ../../packages/core/src/md.ts
@@ -43622,7 +43672,7 @@ function createCharacterManager(getBookDir, indexRegistry = createIndexRegistry(
       await writeMdFile(join9(dir(), character.file), { ...meta3 }, file2.body);
       if (nextName !== character.name) {
         const newFile = numberedFileName(Number(character.file.slice(0, 4)), nextName);
-        await rename4(join9(dir(), character.file), join9(dir(), newFile));
+        await rename3(join9(dir(), character.file), join9(dir(), newFile));
         const index = await indexRegistry.forBook(getBookDir());
         index.renameEntry(id, keyOf(newFile));
         await index.save();
@@ -43643,14 +43693,14 @@ function createCharacterManager(getBookDir, indexRegistry = createIndexRegistry(
       index.removeEntry(id);
       await index.save();
       const relations = await scanRelations();
-      let removed = 0;
+      let removed2 = 0;
       for (const rel of relations) {
         if (rel.a === id || rel.b === id) {
           await rm4(join9(relationDir(), `${rel.id}.md`), { force: true });
-          removed += 1;
+          removed2 += 1;
         }
       }
-      return { deleted: true, removedRelations: removed };
+      return { deleted: true, removedRelations: removed2 };
     },
     search: async (query) => {
       const q = query.trim().toLowerCase();
@@ -43846,7 +43896,7 @@ function isAppConfig(value) {
 
 // ../../packages/core/src/conversation/manager.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { mkdir as mkdir6, readdir as readdir5, rename as rename5, rm as rm5, stat as stat5 } from "node:fs/promises";
+import { mkdir as mkdir6, readdir as readdir5, rename as rename4, rm as rm5, stat as stat5 } from "node:fs/promises";
 import { join as join11 } from "node:path";
 var SESSION_META_FILE = "\u4F1A\u8BDD.md";
 var PENDING_DIR = "\u6539\u52A8";
@@ -44098,7 +44148,7 @@ function createConversationManager(getBookDir) {
       await writeSessionMeta(session, { title: nextTitle, group: nextGroup });
       if (nextTitle !== session.title) {
         const newFolder = numberedFileName(Number(session.folder.slice(0, 4)), nextTitle, "");
-        await rename5(join11(dir(), session.folder), join11(dir(), newFolder));
+        await rename4(join11(dir(), session.folder), join11(dir(), newFolder));
       }
       return toSessionInfo(await findSession(id));
     },
@@ -44271,7 +44321,7 @@ function createConversationManager(getBookDir) {
 }
 
 // ../../packages/core/src/memory/manager.ts
-import { readFile as readFile9, readdir as readdir6, rename as rename6, rm as rm6 } from "node:fs/promises";
+import { readFile as readFile9, readdir as readdir6, rename as rename5, rm as rm6 } from "node:fs/promises";
 import { join as join12 } from "node:path";
 var INDEX_FILE2 = "\u7D22\u5F15.md";
 var FORESHADOW_TYPE = "\u4F0F\u7B14";
@@ -44546,7 +44596,7 @@ function createMemoryManager(getBookDir, chapters, indexRegistry = createIndexRe
       if (newTitle !== void 0 && newTitle.trim() !== memory.title) {
         const newFile = numberedFileName(Number(memory.file.slice(0, 4)), newTitle.trim() || "\u8BB0\u5FC6");
         if (newFile !== memory.file) {
-          await rename6(join12(dir(), memory.file), join12(dir(), newFile));
+          await rename5(join12(dir(), memory.file), join12(dir(), newFile));
           const index = await indexRegistry.forBook(getBookDir());
           index.renameEntry(id, keyOf(newFile));
           await index.save();
@@ -44884,7 +44934,7 @@ ${s.content.trim()}
 }
 
 // ../../packages/core/src/style/manager.ts
-import { readdir as readdir7, rename as rename7, rm as rm7 } from "node:fs/promises";
+import { readdir as readdir7, rename as rename6, rm as rm7 } from "node:fs/promises";
 import { join as join14 } from "node:path";
 var SPEC_FILE = "\u89C4\u8303.md";
 function sectionsToBody(sections) {
@@ -45026,7 +45076,7 @@ function createStyleManager(getBookDir, indexRegistry = createIndexRegistry()) {
       await writeMdFile(join14(exampleDir(), example.file), { ...meta3 }, file2.body);
       if (nextName !== example.name) {
         const newFile = numberedFileName(Number(example.file.slice(0, 4)), nextName);
-        await rename7(join14(exampleDir(), example.file), join14(exampleDir(), newFile));
+        await rename6(join14(exampleDir(), example.file), join14(exampleDir(), newFile));
         const index = await indexRegistry.forBook(getBookDir());
         index.renameEntry(id, keyOf(newFile));
         await index.save();
@@ -45158,7 +45208,7 @@ function stampPrefix(now) {
 }
 
 // ../../packages/core/src/world/manager.ts
-import { readFile as readFile13, readdir as readdir9, rename as rename8, rm as rm8 } from "node:fs/promises";
+import { readFile as readFile13, readdir as readdir9, rename as rename7, rm as rm8 } from "node:fs/promises";
 import { join as join16 } from "node:path";
 function parseEntryMeta(raw) {
   if (typeof raw["name"] !== "string") return null;
@@ -45338,7 +45388,7 @@ function createWorldManager(getBookDir, indexRegistry = createIndexRegistry()) {
       });
       if (nextName !== entry.name) {
         const newFile = numberedFileName(Number(entry.file.slice(0, 4)), nextName);
-        await rename8(join16(dir(), entry.file), join16(dir(), newFile));
+        await rename7(join16(dir(), entry.file), join16(dir(), newFile));
         const index = await indexRegistry.forBook(getBookDir());
         index.renameEntry(id, keyOf(newFile));
         await index.save();
@@ -49463,6 +49513,7 @@ function createBookWatcher(bookDir, onChange) {
   }
   function handleDelete(absPath) {
     if (!ready || ignored(absPath)) return;
+    if (isSelfRemoved(absPath)) return;
     const relPath = relative3(bookDir, absPath).replaceAll("\\", "/");
     onChange({ kind: classify(relPath), relPath, absPath, deleted: true });
   }
@@ -50212,17 +50263,17 @@ var Diff = class {
       }
     }
   }
-  addToPath(path, added, removed, oldPosInc, options) {
+  addToPath(path, added, removed2, oldPosInc, options) {
     const last = path.lastComponent;
-    if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
+    if (last && !options.oneChangePerToken && last.added === added && last.removed === removed2) {
       return {
         oldPos: path.oldPos + oldPosInc,
-        lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent }
+        lastComponent: { count: last.count + 1, added, removed: removed2, previousComponent: last.previousComponent }
       };
     } else {
       return {
         oldPos: path.oldPos + oldPosInc,
-        lastComponent: { count: 1, added, removed, previousComponent: last }
+        lastComponent: { count: 1, added, removed: removed2, previousComponent: last }
       };
     }
   }
@@ -50519,7 +50570,8 @@ function createServiceGraph(env) {
   const configStore = createConfigStore(env.dataDir);
   register2(CONFIG_CHANNEL_PREFIX, createConfigService(configStore));
   const indexRegistry = createIndexRegistry();
-  const bookManager = createBookManager(indexRegistry);
+  const structureQueue = createOpQueue();
+  const bookManager = createBookManager(indexRegistry, structureQueue);
   const requireBookDir = () => {
     const current = bookManager.getCurrent().book;
     if (!current) {
@@ -50527,7 +50579,7 @@ function createServiceGraph(env) {
     }
     return current.path;
   };
-  const chapters = createChapterManager(requireBookDir, indexRegistry);
+  const chapters = createChapterManager(requireBookDir, indexRegistry, structureQueue);
   const versions = createVersionManager(requireBookDir);
   const world = createWorldManager(requireBookDir, indexRegistry);
   const chars = createCharacterManager(requireBookDir, indexRegistry);

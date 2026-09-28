@@ -1,6 +1,6 @@
 {
   "name": "@dreamquill/zcode-plugin",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "description": "Dreamquill AI 写作后端的 zcode 插件形态——MCP server 暴露书稿/设定/记忆/组装/落稿工具。",

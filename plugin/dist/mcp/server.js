@@ -42201,11 +42201,28 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 import { copyFile, readFile, stat as stat2 } from "node:fs/promises";
 import { join } from "node:path";
 var INDEX_PATH = ".dreamquill/index.json";
+var saveLocks = /* @__PURE__ */ new Map();
+function sameEntry(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+function mergeDomain(baseDom, mineDom, diskDom) {
+  const merged = {};
+  for (const id of /* @__PURE__ */ new Set([...Object.keys(mineDom), ...Object.keys(diskDom)])) {
+    if (id in mineDom) {
+      if (!sameEntry(mineDom[id], baseDom[id])) merged[id] = mineDom[id];
+      else if (id in diskDom) merged[id] = diskDom[id];
+    } else if (!(id in baseDom) && id in diskDom) {
+      merged[id] = diskDom[id];
+    }
+  }
+  return merged;
+}
 var RESURRECT_GRACE_MS = 1e4;
 function createBookIndex(bookDir, initial) {
   const indexPath = join(bookDir, INDEX_PATH);
   let data = null;
   let dirty = false;
+  let base = null;
   const tombstones = /* @__PURE__ */ new Map();
   function ensure() {
     if (data) return data;
@@ -42214,6 +42231,7 @@ function createBookIndex(bookDir, initial) {
       chapters: initial?.chapters ?? {},
       entries: initial?.entries ?? {}
     };
+    base = structuredClone(data);
     return data;
   }
   function revive(kind, key) {
@@ -42366,19 +42384,33 @@ function createBookIndex(bookDir, initial) {
     },
     async save() {
       if (!dirty) return;
-      const d = ensure();
-      dirty = false;
-      try {
-        await atomicWrite(indexPath, JSON.stringify(d, null, 2), {
-          journal: true,
-          code: "BOOK_INDEX_WRITE_FAILED",
-          message: "\u8EAB\u4EFD\u7D22\u5F15\u5199\u5165\u5931\u8D25"
-        });
-      } catch (err) {
-        dirty = true;
-        if (err instanceof AppError) throw err;
-        throw new AppError("\u8EAB\u4EFD\u7D22\u5F15\u5199\u5165\u5931\u8D25", "BOOK_INDEX_WRITE_FAILED", { cause: String(err) });
-      }
+      const run = (saveLocks.get(indexPath) ?? Promise.resolve()).catch(() => void 0).then(async () => {
+        const d = ensure();
+        const disk = await readFile(indexPath, "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+        if (disk && base && typeof disk === "object") {
+          d.volumes = mergeDomain(base.volumes, d.volumes, disk.volumes ?? {});
+          d.chapters = mergeDomain(base.chapters, d.chapters, disk.chapters ?? {});
+          d.entries = mergeDomain(base.entries, d.entries, disk.entries ?? {});
+        }
+        base = structuredClone(d);
+        const payload = JSON.stringify(d, null, 2);
+        dirty = false;
+        try {
+          await atomicWrite(indexPath, payload, {
+            journal: true,
+            code: "BOOK_INDEX_WRITE_FAILED",
+            message: "\u8EAB\u4EFD\u7D22\u5F15\u5199\u5165\u5931\u8D25"
+          });
+        } catch (err) {
+          dirty = true;
+          if (err instanceof AppError) throw err;
+          throw new AppError("\u8EAB\u4EFD\u7D22\u5F15\u5199\u5165\u5931\u8D25", "BOOK_INDEX_WRITE_FAILED", { cause: String(err) });
+        }
+      });
+      saveLocks.set(indexPath, run);
+      await run.finally(() => {
+        if (saveLocks.get(indexPath) === run) saveLocks.delete(indexPath);
+      });
     }
   };
 }
@@ -50984,27 +51016,35 @@ function registerTools(server2, ctx) {
   server2.registerTool(
     "createVolume",
     {
-      description: "\u65B0\u5EFA\u5377\uFF08\u8FFD\u52A0\u5230\u672B\u5C3E\uFF09\u3002",
+      description: "\u65B0\u5EFA\u5377\uFF08\u8FFD\u52A0\u5230\u672B\u5C3E\uFF09\u3002\u540C\u540D\u5377\u4EC5\u63D0\u9192\u4E0D\u62D2\u7EDD\u3002",
       inputSchema: external_exports.object({ name: external_exports.string().min(1).describe("\u5377\u540D\uFF08\u5982 \u7B2C\u4E00\u5377\xB7\u98CE\u8D77\uFF09") })
     },
     async ({ name }) => guard(async () => {
       const volumes = await getData(ctx, "book:createVolume", [name]);
       const created = volumes.find((v) => v.name === name) ?? volumes[volumes.length - 1];
-      return text(`\u5DF2\u65B0\u5EFA\u5377\u300C${created.name}\u300D\uFF08\u5E8F\u53F7 ${created.order}\uFF0C\u5171 ${volumes.length} \u5377\uFF09`);
+      const note = volumeDupNote(volumes, created.name);
+      return text(
+        `\u5DF2\u65B0\u5EFA\u5377\u300C${created.name}\u300D\uFF08\u5E8F\u53F7 ${created.order}\uFF0C\u5171 ${volumes.length} \u5377\uFF09${note ? `
+${note}` : ""}`
+      );
     })
   );
   server2.registerTool(
     "renameVolume",
     {
-      description: "\u91CD\u547D\u540D\u5377\uFF08\u5E8F\u53F7\u4E0E id \u4E0D\u53D8\uFF09\u3002",
+      description: "\u91CD\u547D\u540D\u5377\uFF08\u5E8F\u53F7\u4E0E id \u4E0D\u53D8\uFF09\u3002\u76EE\u6807\u540D\u4E0E\u65E2\u6709\u5377\u540C\u540D\u4EC5\u63D0\u9192\u4E0D\u62D2\u7EDD\u3002",
       inputSchema: external_exports.object({
-        volumeId: external_exports.string().describe("\u5377 id\uFF08\u6765\u81EA listVolumes\uFF09"),
+        volumeId: external_exports.string().optional().describe("\u5377 id\uFF08\u4E0E order \u4E8C\u9009\u4E00\uFF0C\u540C\u4F20\u4EE5 id \u4E3A\u51C6\uFF09"),
+        order: external_exports.number().int().positive().optional().describe("\u5377\u5E8F\uFF08\u4E0E volumeId \u4E8C\u9009\u4E00\uFF09"),
         newName: external_exports.string().min(1).describe("\u65B0\u5377\u540D")
       })
     },
-    async ({ volumeId, newName }) => guard(async () => {
-      await getData(ctx, "book:renameVolume", [volumeId, newName]);
-      return text(`\u5DF2\u91CD\u547D\u540D\u5377\uFF08id: ${volumeId}\uFF09\u4E3A\u300C${newName}\u300D`);
+    async ({ volumeId, order, newName }) => guard(async () => {
+      const vol = await resolveVolume(ctx, volumeId, order);
+      const volumes = await getData(ctx, "book:renameVolume", [vol.id, newName]);
+      const note = volumeDupNote(volumes, newName);
+      return text(`\u5DF2\u91CD\u547D\u540D\u5377\uFF08id: ${vol.id}\uFF09\u4E3A\u300C${newName}\u300D${note ? `
+${note}` : ""}`);
     })
   );
   server2.registerTool(
@@ -51456,34 +51496,42 @@ function registerChapterWriteTools(server2, ctx) {
           picked,
           order
         ]);
+        const note2 = await chapterDupNote(ctx, info2.title, info2.id);
         return text(
           `\u5DF2\u8865\u5EFA\u7B2C ${info2.order} \u7AE0\u300A${info2.title}\u300B\uFF08\u7F3A\u5931\u4FA7\u5DF2\u843D\u76D8\uFF0C\u672A\u8986\u76D6\u65E2\u6709\u5185\u5BB9\uFF09
 \u7EC6\u7EB2\uFF1A${info2.outlinePath}\uFF08${info2.hasOutline ? "\u5C31\u7EEA" : "\u672A\u5EFA"}\uFF09
-\u6B63\u6587\uFF1A${info2.path}\uFF08${info2.hasBody ? "\u5C31\u7EEA" : "\u672A\u5EFA\u2014\u2014\u53EF\u539F\u751F Write \u6B64\u8DEF\u5F84"}\uFF09`
+\u6B63\u6587\uFF1A${info2.path}\uFF08${info2.hasBody ? "\u5C31\u7EEA" : "\u672A\u5EFA\u2014\u2014\u53EF\u539F\u751F Write \u6B64\u8DEF\u5F84"}\uFF09${note2 ? `
+${note2}` : ""}`
         );
       }
       if (!title) throw new ToolError("VALIDATION", "\u65B0\u5EFA\u7AE0\u9700\u8981 title\uFF08\u8865\u5EFA\u65E2\u6709\u7AE0\u8BF7\u4F20 order\uFF09");
       const vol = await resolveVolume(ctx, volumeId, volumeOrder);
       const info = await getData(ctx, "chapter:create", [vol.id, title, picked]);
+      const note = await chapterDupNote(ctx, info.title, info.id);
       return text(
         `\u5DF2\u5EFA\u7AE0\u300C${info.title}\u300D\uFF08id: ${info.id}\uFF0C\u5168\u4E66\u5E8F\u53F7 ${info.order}\uFF09
 \u7EC6\u7EB2\uFF1A${info.outlinePath}${picked === "body" ? "\uFF08\u672A\u5EFA\u2014\u2014\u53EF\u7ECF order \u8865\u5EFA\u6A21\u677F\u6216\u539F\u751F Write\uFF09" : ""}
-\u6B63\u6587\uFF1A${info.path}${picked === "outline" ? "\uFF08\u672A\u5EFA\u2014\u2014\u5199\u4F5C\u65F6\u539F\u751F Write \u6B64\u8DEF\u5F84\u5373\u81EA\u52A8\u914D\u5BF9\uFF09" : ""}`
+\u6B63\u6587\uFF1A${info.path}${picked === "outline" ? "\uFF08\u672A\u5EFA\u2014\u2014\u5199\u4F5C\u65F6\u539F\u751F Write \u6B64\u8DEF\u5F84\u5373\u81EA\u52A8\u914D\u5BF9\uFF09" : ""}${note ? `
+${note}` : ""}`
       );
     })
   );
   server2.registerTool(
     "renameChapter",
     {
-      description: "\u91CD\u547D\u540D\u7AE0\uFF08id \u4E0D\u53D8\uFF0C\u6587\u4EF6\u540D\u540C\u6B65\u66F4\u65B0\uFF09\u3002",
+      description: "\u91CD\u547D\u540D\u7AE0\uFF08id \u4E0D\u53D8\uFF0C\u6587\u4EF6\u540D\u540C\u6B65\u66F4\u65B0\uFF09\u3002\u76EE\u6807\u6807\u9898\u4E0E\u65E2\u6709\u7AE0\u540C\u6807\u9898\u4EC5\u63D0\u9192\u4E0D\u62D2\u7EDD\u3002",
       inputSchema: external_exports.object({
-        id: external_exports.string().describe("\u7AE0 id"),
+        id: external_exports.string().optional().describe("\u7AE0 id\uFF08\u4E0E order \u4E8C\u9009\u4E00\uFF0C\u540C\u4F20\u4EE5 id \u4E3A\u51C6\uFF09"),
+        order: external_exports.number().int().positive().optional().describe("\u5168\u4E66\u7AE0\u5E8F\uFF08\u4E0E id \u4E8C\u9009\u4E00\uFF09"),
         newTitle: external_exports.string().min(1).describe("\u65B0\u7AE0\u6807\u9898")
       })
     },
-    async ({ id, newTitle }) => guard(async () => {
-      const info = await getData(ctx, "chapter:rename", [id, newTitle]);
-      return text(`\u5DF2\u91CD\u547D\u540D\u4E3A\u300C${info.title}\u300D`);
+    async ({ id, newTitle, order }) => guard(async () => {
+      const chapterId = await resolveChapterId(ctx, id, order);
+      const info = await getData(ctx, "chapter:rename", [chapterId, newTitle]);
+      const note = await chapterDupNote(ctx, newTitle, chapterId);
+      return text(`\u5DF2\u91CD\u547D\u540D\u4E3A\u300C${info.title}\u300D${note ? `
+${note}` : ""}`);
     })
   );
   server2.registerTool(
@@ -51711,6 +51759,17 @@ async function resolveVolume(ctx, volumeId, order) {
   }
   return hit;
 }
+async function chapterDupNote(ctx, title, selfId) {
+  const all = await getData(ctx, "chapter:list", [null]);
+  const dup = all.filter((c) => c.title === title && c.id !== selfId);
+  if (dup.length === 0) return null;
+  return `\u26A0 \u91CD\u540D\u63D0\u9192\uFF1A\u4E0E\u65E2\u6709\u7AE0\u540C\u6807\u9898\u2014\u2014${dup.map((c) => `\u7B2C${c.order}\u7AE0`).join("\u3001")}\uFF1B\u4EC5\u63D0\u9192\uFF0C\u672A\u963B\u6B62\u64CD\u4F5C`;
+}
+function volumeDupNote(volumes, name) {
+  const dup = volumes.filter((v) => v.name === name);
+  if (dup.length < 2) return null;
+  return `\u26A0 \u91CD\u540D\u63D0\u9192\uFF1A\u5171 ${dup.length} \u4E2A\u540C\u540D\u5377\uFF08\u5E8F\u53F7 ${dup.map((v) => v.order).join("\u3001")}\uFF09\uFF1B\u4EC5\u63D0\u9192\uFF0C\u672A\u963B\u6B62\u64CD\u4F5C`;
+}
 function buildScene(stage, chapterId, volumeId) {
   switch (stage) {
     case "chapter":
@@ -51747,7 +51806,7 @@ function registerChapterTools(server2, ctx) {
   server2.registerTool(
     "readManuscript",
     {
-      description: "\u8BFB\u4EA7\u7269\u6B63\u6587\uFF08scope\uFF1Achapter \u7AE0\u6B63\u6587/chapter-outline \u7AE0\u7EB2/volume-outline \u5206\u5377\u5927\u7EB2/full-outline \u5168\u6587\u5927\u7EB2\uFF09\u3002chapter \u6863 id/order \u4E8C\u9009\u4E00\u3001volume \u6863 volumeId/order \u4E8C\u9009\u4E00\uFF1BmetaOnly=true \u53EA\u56DE\u5B9A\u4F4D\u4E0E\u6982\u8981\uFF08\u7AE0\uFF1D\u72B6\u6001/\u5B57\u6570/\u53CC\u8DEF\u5F84\u3001\u5927\u7EB2\uFF1D\u8DEF\u5F84\uFF0B\u5C0F\u8282\u6807\u9898\u6E05\u5355\uFF09\u4E0D\u62D6\u6B63\u6587\u2014\u2014\u7EED\u5199\u5B9A\u4F4D\u3001\u5BA1\u9605\u70B9\u540D\u6539\u5199\u573A\u666F\u7528\u3002",
+      description: "\u8BFB\u4EA7\u7269\u6B63\u6587\uFF08scope\uFF1Achapter \u7AE0\u6B63\u6587/chapter-outline \u7AE0\u7EB2/volume-outline \u5206\u5377\u5927\u7EB2/full-outline \u5168\u6587\u5927\u7EB2\uFF09\u3002chapter \u6863 id/order \u4E8C\u9009\u4E00\u3001volume \u6863 volumeId/order \u4E8C\u9009\u4E00\uFF1BmetaOnly=true \u53EA\u56DE\u5B9A\u4F4D\u4E0E\u6982\u8981\uFF08\u7AE0\uFF1D\u72B6\u6001/\u5B57\u6570/\u53CC\u8DEF\u5F84\u3001\u5927\u7EB2\uFF1D\u8DEF\u5F84\uFF0B\u5C0F\u8282\u6807\u9898\u6E05\u5355\uFF09\u4E0D\u62D6\u6B63\u6587\u2014\u2014\u7EED\u5199\u5B9A\u4F4D\u3001\u5BA1\u9605\u70B9\u540D\u6539\u5199\u573A\u666F\u7528\u3002\u5168\u4E66\u540C\u6807\u9898\u7AE0/\u540C\u540D\u5377\u81EA\u52A8\u5E26\u91CD\u540D\u6807\u6CE8\uFF08sameTitleAs/sameNameAs\uFF0C\u4EC5\u63D0\u9192\uFF09\u3002",
       inputSchema: external_exports.object({
         scope: external_exports.enum(["chapter", "chapter-outline", "volume-outline", "full-outline"]).describe("\u8BFB\u53D6\u5BF9\u8C61"),
         id: external_exports.string().optional().describe("\u7AE0 id\uFF08chapter/chapter-outline \u6863\uFF1B\u4E0E order \u4E8C\u9009\u4E00\uFF0C\u540C\u4F20\u4EE5 id \u4E3A\u51C6\uFF09"),
@@ -51767,38 +51826,49 @@ function registerChapterTools(server2, ctx) {
       }
       if (scope === "volume-outline") {
         const vol = await resolveVolume(ctx, volumeId, order);
+        const vols = await getData(ctx, "book:listVolumes", []);
+        const volDup = vols.filter((v) => v.name === vol.name && v.order !== vol.order);
+        const volDupDesc = volDup.length > 0 ? `\u7B2C${volDup.map((v) => v.order).join("\u5377\u3001\u7B2C")}\u5377` : null;
         const o2 = await getData(ctx, "outline:getVolumeOutline", [vol.id]);
         if (metaOnly) {
           return json2({
             path: `\u5927\u7EB2/\u5206\u5377\u5927\u7EB2/${vol.folder}.md`,
             \u5377\u540D: o2.volumeName,
-            \u5C0F\u8282: o2.sections.map((s) => s.title)
+            \u5C0F\u8282: o2.sections.map((s) => s.title),
+            ...volDupDesc ? { sameNameAs: volDupDesc } : {}
           });
         }
         const body = o2.sections.length > 0 ? sectionsMd(o2.sections) : "\uFF08\u672C\u5377\u5206\u5377\u5927\u7EB2\u4E3A\u7A7A\u2014\u2014\u53EF\u5F15\u5BFC\u4F5C\u8005\u8D77\u8349\uFF09";
-        return text(`# ${o2.volumeName} \xB7 \u5206\u5377\u5927\u7EB2
+        return text(
+          `# ${o2.volumeName} \xB7 \u5206\u5377\u5927\u7EB2${volDupDesc ? `
 
-${body}`);
+> \u26A0 \u91CD\u540D\uFF1A\u4E0E${volDupDesc}\u540C\u540D` : ""}
+
+${body}`
+        );
       }
       const chapterId = await resolveChapterId(ctx, id, order);
+      const whole = await getData(ctx, "chapter:list", [null]);
+      const self = whole.find((c) => c.id === chapterId);
+      const chapterDup = self ? whole.filter((c) => c.title === self.title && c.id !== chapterId) : [];
+      const chapterDupDesc = chapterDup.length > 0 ? `\u7B2C${chapterDup.map((c) => c.order).join("\u7AE0\u3001\u7B2C")}\u7AE0` : null;
       if (scope === "chapter") {
         const body = await getData(ctx, "chapter:get", [chapterId]);
         if (metaOnly) {
-          return json2(
-            body.info.hasBody ? body.info : {
-              ...body.info,
-              \u8BF4\u660E: "\u6B63\u6587\u6587\u4EF6\u672A\u5EFA\u2014\u2014\u53EF\u76F4\u63A5\u539F\u751F Write \u8BE5\u8DEF\u5F84\u843D\u76D8\uFF08\u76D1\u542C\u81EA\u52A8\u914D\u5BF9\uFF09"
-            }
-          );
+          const infoOut = body.info.hasBody ? body.info : {
+            ...body.info,
+            \u8BF4\u660E: "\u6B63\u6587\u6587\u4EF6\u672A\u5EFA\u2014\u2014\u53EF\u76F4\u63A5\u539F\u751F Write \u8BE5\u8DEF\u5F84\u843D\u76D8\uFF08\u76D1\u542C\u81EA\u52A8\u914D\u5BF9\uFF09"
+          };
+          return json2(chapterDupDesc ? { ...infoOut, sameTitleAs: chapterDupDesc } : infoOut);
         }
         return text(
           body.info.hasBody ? `# ${body.info.title}
 
-> \u72B6\u6001\uFF1A${body.info.status}\uFF5C\u5E8F\u53F7\uFF1A${body.info.order}\uFF5C\u5B57\u6570\uFF1A${body.info.wordCount}\uFF5C\u8DEF\u5F84\uFF1A${body.info.path}
+> \u72B6\u6001\uFF1A${body.info.status}\uFF5C\u5E8F\u53F7\uFF1A${body.info.order}\uFF5C\u5B57\u6570\uFF1A${body.info.wordCount}\uFF5C\u8DEF\u5F84\uFF1A${body.info.path}${chapterDupDesc ? `\uFF5C\u26A0 \u91CD\u540D\uFF1A\u4E0E${chapterDupDesc}\u540C\u6807\u9898` : ""}
 
 ${body.content}` : `# ${body.info.title}
 
-> \u72B6\u6001\uFF1A${body.info.status}\uFF5C\u5E8F\u53F7\uFF1A${body.info.order}\uFF5C**\u6B63\u6587\u6587\u4EF6\u672A\u5EFA**\u2014\u2014\u539F\u751F Write \u8DEF\u5F84 ${body.info.path} \u843D\u76D8\u5373\u81EA\u52A8\u914D\u5BF9`
+> \u72B6\u6001\uFF1A${body.info.status}\uFF5C\u5E8F\u53F7\uFF1A${body.info.order}\uFF5C**\u6B63\u6587\u6587\u4EF6\u672A\u5EFA**\u2014\u2014\u539F\u751F Write \u8DEF\u5F84 ${body.info.path} \u843D\u76D8\u5373\u81EA\u52A8\u914D\u5BF9${chapterDupDesc ? `\uFF5C\u26A0 \u91CD\u540D\uFF1A\u4E0E${chapterDupDesc}\u540C\u6807\u9898` : ""}`
         );
       }
       const o = await getData(ctx, "chapter:getOutline", [chapterId]);
@@ -51807,17 +51877,23 @@ ${body.content}` : `# ${body.info.title}
           o.info.hasOutline ? {
             path: o.info.outlinePath,
             \u7AE0\u6807\u9898: o.info.title,
-            \u5C0F\u8282: o.sections.map((s) => s.title)
+            \u5C0F\u8282: o.sections.map((s) => s.title),
+            ...chapterDupDesc ? { sameTitleAs: chapterDupDesc } : {}
           } : {
             path: o.info.outlinePath,
             \u7AE0\u6807\u9898: o.info.title,
-            \u8BF4\u660E: "\u7EC6\u7EB2\u6587\u4EF6\u672A\u5EFA\u2014\u2014\u53EF\u539F\u751F Write \u8BE5\u8DEF\u5F84\uFF0C\u6216 createChapter \u4F20 order \u8865\u5EFA\u9AA8\u67B6\u6A21\u677F"
+            \u8BF4\u660E: "\u7EC6\u7EB2\u6587\u4EF6\u672A\u5EFA\u2014\u2014\u53EF\u539F\u751F Write \u8BE5\u8DEF\u5F84\uFF0C\u6216 createChapter \u4F20 order \u8865\u5EFA\u9AA8\u67B6\u6A21\u677F",
+            ...chapterDupDesc ? { sameTitleAs: chapterDupDesc } : {}
           }
         );
       }
-      return text(`# ${o.info.title} \xB7 \u7AE0\u8282\u5927\u7EB2
+      return text(
+        `# ${o.info.title} \xB7 \u7AE0\u8282\u5927\u7EB2${chapterDupDesc ? `
 
-${sectionsMd(o.sections)}`);
+> \u26A0 \u91CD\u540D\uFF1A\u4E0E${chapterDupDesc}\u540C\u6807\u9898` : ""}
+
+${sectionsMd(o.sections)}`
+      );
     })
   );
 }
